@@ -1,0 +1,107 @@
+# ============================================================
+# SLA-Gated LLM Serving System — .gitignore
+# ============================================================
+
+# ---------------------------
+# Python
+# ---------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.lcov
+
+# mypy / type checkers
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# ---------------------------
+# Environment & Secrets
+# ---------------------------
+.env
+*.env
+!config/gateway.env.example
+*.key
+*.pem
+*.crt
+secrets/
+
+# ---------------------------
+# Logs & Profiling
+# ---------------------------
+*.log
+*.log.*
+logs/
+*.prof
+*.trace
+
+# ---------------------------
+# Results & Benchmark Output
+# ---------------------------
+results/
+*.csv
+*.json
+!config/*.json
+
+# ---------------------------
+# Docker
+# ---------------------------
+.dockerignore
+
+# ---------------------------
+# macOS
+# ---------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ---------------------------
+# IDEs & Editors
+# ---------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# ---------------------------
+# Misc
+# ---------------------------
+*.tmp
+*.bak
+*.orig
+.cache/
+tmp/
+
