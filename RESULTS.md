@@ -3,7 +3,7 @@
 Qwen2.5-7B-Instruct-AWQ (4-bit) · SGLang (Triton attention, FP16) · FastAPI gateway · Tesla T4 15 GB · Python 3.13
 
 Engine flags:
-- `--quantization awq --dtype float16 --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.78 --context-length 4096 --max-running-requests 32 --enable-metrics --enable-cache-report`
+- `--quantization awq --dtype float16 --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.80 --context-length 4096 --max-running-requests 32 --enable-metrics --enable-cache-report`
 
 ## VRAM allocation
 
