@@ -247,8 +247,7 @@ Per-run logs go to `Logs/benchmark_<timestamp>.log`.
 | Factor | Value used for the reported results |
 |---|---|
 | GPU | 1× Tesla T4, 15,360 MiB |
-| Model | `Qwen/Qwen2.5-7B-Instruct-AWQ` |
-| Engine flags | `--quantization awq --dtype half --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.85 --context-length 4096 --max-running-requests 32 --enable-metrics` |
+| Engine flags | `--quantization awq --dtype half --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.80 --context-length 4096 --max-running-requests 32 --enable-metrics` |
 | Gateway | `KV_LIMIT=90`, `GATEWAY_MAX_INFLIGHT=128` |
 | Decoding | `temperature=0.0`, `max_tokens=256` |
 | Client concurrency |  concurrency (`--max-inflight 128`) |
