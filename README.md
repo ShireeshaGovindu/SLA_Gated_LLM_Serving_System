@@ -248,12 +248,10 @@ Per-run logs go to `Logs/benchmark_<timestamp>.log`.
 |---|---|
 | GPU | 1× Tesla T4, 15,360 MiB |
 | Model | `Qwen/Qwen2.5-7B-Instruct-AWQ` |
-| Engine flags | `--quantization awq --dtype half --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.45 --context-length 4096 --max-running-requests 16 --enable-metrics` |
+| Engine flags | `--quantization awq --dtype half --attention-backend triton --sampling-backend pytorch --mem-fraction-static 0.85 --context-length 4096 --max-running-requests 32 --enable-metrics` |
 | Gateway | `KV_LIMIT=90`, `GATEWAY_MAX_INFLIGHT=128` |
 | Decoding | `temperature=0.0`, `max_tokens=256` |
 | Client concurrency |  concurrency (`--max-inflight 128`) |
-
-> **Note:** `scripts/start_engine.sh` currently launches with `--mem-fraction-static 0.80 --max-running-requests 32`, which differs from the reported run (`0.45` / `16`). To reproduce the reported numbers, edit those two flags in the script (or launch `python -m sglang.launch_server` manually with the flags above). Queueing in Scenario B depends directly on `--max-running-requests`.
 
 ### Procedure
 
