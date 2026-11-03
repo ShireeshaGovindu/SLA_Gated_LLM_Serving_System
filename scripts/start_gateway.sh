@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /content/LLM_Serving_System
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 
 exec python -m uvicorn gateway:app \
-    --app-dir /content/LLM_Serving_System \
+    --app-dir "$ROOT" \
     --host 127.0.0.1 \
-    --port 8081
+    --port "${GATEWAY_PORT:-8081}"

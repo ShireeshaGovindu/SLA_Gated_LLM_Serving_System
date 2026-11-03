@@ -22,6 +22,9 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from config.benchmark_config import DOMAINS, SHARED_SYSTEM_PROMPT_BASE
+from config.prefix_config import get_prefix
+
 SGLANG_URL = os.getenv("SGLANG_URL", "http://127.0.0.1:30000").rstrip("/")
 KV_LIMIT = float(os.getenv("KV_LIMIT", "90"))
 MAX_INFLIGHT = int(os.getenv("GATEWAY_MAX_INFLIGHT", "128"))
@@ -30,8 +33,6 @@ METRICS_CACHE_TTL = float(os.getenv("METRICS_CACHE_TTL_SECONDS", "0.25"))
 
 HTTP: httpx.AsyncClient | None = None
 ENGINE_SEMAPHORE = asyncio.Semaphore(MAX_INFLIGHT)
-
-ADMISSION_LOCK = asyncio.Lock()
 
 _metrics_cache: dict[str, Any] = {"time": 0.0, "text": ""}
 _counters = {
@@ -44,6 +45,18 @@ _counters = {
     "kv_metrics_errors": 0,
 }
 _counter_lock = asyncio.Lock()
+_START = time.monotonic()
+
+
+def _admission_log(level: str, priority: str, usage_percent: float | None, outcome: str) -> None:
+    """One live line per admission decision, e.g.
+    [WARN]  t=480.4s  kv_usage=0.920  tier2 -> HTTP 503"""
+    tier = "tier1" if priority == "high" else "tier2"
+    kv = f"{usage_percent / 100:.3f}" if usage_percent is not None else "n/a"
+    print(
+        f"[{level}]  t={time.monotonic() - _START:.1f}s  kv_usage={kv}  {tier} -> {outcome}",
+        flush=True,
+    )
 
 
 @asynccontextmanager
@@ -67,6 +80,13 @@ class GenerateRequest(BaseModel):
     priority: str = Field(default="standard", pattern="^(standard|high)$")
     schema: dict[str, Any] | None = None
     request_id: str | None = None
+
+    # Prefix-aware request configuration
+    prefix_profile: str = Field(
+        default="none",
+        pattern="^(none|shared_1500|shared_2000)$"
+    )
+    domain: str | None = None
 
 
 def _metric_value(metrics_text: str, metric_name: str) -> float | None:
@@ -96,6 +116,15 @@ async def get_engine_metrics_text() -> str:
         return str(_metrics_cache["text"] or "")
 
 
+async def get_sglang_token_usage_percent() -> float | None:
+    text = await get_engine_metrics_text()
+    usage = _metric_value(text, "sglang:token_usage")
+
+    if usage is None or not 0.0 <= usage <= 1.0:
+        return None
+
+    return usage * 100.0
+
 async def get_token_occupancy_percent() -> float | None:
     text = await get_engine_metrics_text()
 
@@ -118,6 +147,33 @@ async def get_token_occupancy_percent() -> float | None:
     return (capacity - available) / capacity * 100.0
 
 
+def build_prefix_aware_prompt(
+    user_prompt: str,
+    prefix_profile: str = "none",
+    domain: str | None = None,
+) -> str:
+    """
+    Construct an inference prompt with an optional shared prefix.
+
+    The shared prefix is always placed at the beginning
+    of the prompt to maximize SGLang RadixAttention reuse.
+    """
+
+    shared_prefix = get_prefix(prefix_profile)
+
+    if shared_prefix is None:
+        return user_prompt
+
+    parts = [shared_prefix]
+
+    if domain:
+        parts.append(f"Domain: {domain}")
+
+    parts.append(f"User Query:\n{user_prompt}")
+
+    return "\n\n".join(parts)
+
+
 async def _increment(key: str) -> None:
     async with _counter_lock:
         _counters[key] = _counters.get(key, 0) + 1
@@ -134,33 +190,42 @@ async def _generate(
     priority = payload.priority.lower()
 
     # 1. SLA-based admission and KV-cache pressure check
-    async with ADMISSION_LOCK:
-        occupancy = await get_token_occupancy_percent()
+    occupancy = await get_sglang_token_usage_percent()
 
-        if occupancy is None:
-            await _increment("kv_metrics_errors")
+    # KV-cache-aware priority admission control
 
-            if priority != "high":
-                await _increment("requests_shed")
-                raise HTTPException(
-                    status_code=503,
-                    detail={
-                        "error": "kv_metrics_unavailable",
-                        "reason": "Cannot verify KV-cache capacity.",
-                        "threshold_percent": KV_LIMIT,
-                    },
-                    headers={"Retry-After": "1"},
-                )
+    if occupancy is None:
+        await _increment("kv_metrics_errors")
 
-        elif occupancy >= KV_LIMIT and priority != "high":
+        # Fail closed for Tier 2 when KV-cache metrics are unavailable.
+        if priority != "high":
             await _increment("requests_shed")
+            _admission_log("WARN", priority, occupancy, "HTTP 503 (KV metrics unavailable)")
+
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "kv_metrics_unavailable",
+                    "reason": "Cannot verify KV-cache capacity.",
+                    "threshold_percent": KV_LIMIT,
+                },
+                headers={"Retry-After": "1"},
+            )
+
+    elif occupancy > KV_LIMIT:
+
+        # Shed Tier 2 when KV-cache allocation exceeds 90%.
+        if priority != "high":
+            await _increment("requests_shed")
+            _admission_log("WARN", priority, occupancy, f"HTTP 503 (KV > {KV_LIMIT:.0f}%: shed)")
+
             raise HTTPException(
                 status_code=503,
                 detail={
                     "error": "kv_cache_capacity_exceeded",
                     "reason": (
                         f"Standard request rejected: "
-                        f"token usage {occupancy:.1f}%"
+                        f"KV-cache usage is {occupancy:.1f}%"
                     ),
                     "occupancy_percent": round(occupancy, 3),
                     "threshold_percent": KV_LIMIT,
@@ -168,12 +233,29 @@ async def _generate(
                 headers={"Retry-After": "1"},
             )
 
-        if priority == "high" and (
-            occupancy is None or occupancy >= KV_LIMIT
-        ):
-            await _increment("high_priority_allowed")
+    # Record Tier 1 requests allowed during KV-cache pressure.
+    if priority == "high" and (
+        occupancy is None or occupancy > KV_LIMIT
+    ):
+        await _increment("high_priority_allowed")
 
-        await _increment("requests_accepted")
+    # Request passed gateway admission control.
+    await _increment("requests_accepted")
+    _admission_log(
+        "INFO",
+        priority,
+        occupancy,
+        "admitted"
+        + (
+            ""
+            if occupancy is None
+            else (
+                f" (KV > {KV_LIMIT:.0f}%: never shed)"
+                if occupancy > KV_LIMIT
+                else f" (KV <= {KV_LIMIT:.0f}%)"
+            )
+        ),
+    )
 
     # 2. Check engine HTTP client
     if HTTP is None:
@@ -200,10 +282,25 @@ async def _generate(
             separators=(",", ":"),
         )
 
+    # Construct prefix-aware prompt
+    structured_prompt = build_prefix_aware_prompt(
+        user_prompt=payload.prompt,
+        prefix_profile=payload.prefix_profile,
+        domain=payload.domain,
+    )
+
     engine_payload = {
-        "text": payload.prompt,
+        "text": structured_prompt,
         "sampling_params": sampling_params,
     }
+
+    if os.getenv("DEBUG_PREFIX") == "1":
+        print(
+            f"[PREFIX DEBUG] profile={payload.prefix_profile}, "
+            f"prompt_chars={len(structured_prompt)}, "
+            f"prompt_start={repr(structured_prompt[:100])}, "
+            f"prompt_end={repr(structured_prompt[-100:])}"
+        )
 
     # 4. Forward admitted request to SGLang
     started = time.perf_counter()
@@ -369,12 +466,16 @@ async def health():
 @app.get("/metrics")
 async def gateway_metrics():
     occupancy = await get_token_occupancy_percent()
+    token_usage = await get_sglang_token_usage_percent()
+
     async with _counter_lock:
         counters = dict(_counters)
+
     return {
         **counters,
         "kv_occupancy_percent": occupancy,
-        "kv_metrics_available": occupancy is not None,
+        "kv_token_usage_percent": token_usage,
+        "kv_metrics_available": token_usage is not None,
         "kv_threshold_percent": KV_LIMIT,
         "gateway_max_inflight": MAX_INFLIGHT,
         "engine_url": SGLANG_URL,
