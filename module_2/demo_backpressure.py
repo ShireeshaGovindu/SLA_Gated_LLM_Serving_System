@@ -112,19 +112,19 @@ class EventLog:
         limit = f"{self.threshold:.0f}%"
 
         if kv is not None:
-            above = kv * 100 > self.threshold
+            above = kv * 100 >= self.threshold
 
             if outcome == "admitted":
                 if tier == "tier1":
                     suffix = (
-                        f" (KV > {limit}: never shed)"
+                        f" (KV >= {limit}: never shed)"
                         if above
-                        else f" (KV <= {limit})"
+                        else f" (KV < {limit})"
                     )
                 else:
-                    suffix = f" (KV <= {limit})"
+                    suffix = f" (KV < {limit})"
             elif outcome == "HTTP 503":
-                suffix = f" (KV > {limit}: shed)"
+                suffix = f" (KV >= {limit}: shed)"
 
         self._line(level, f"t={t:.1f}s", kv, tier, outcome, suffix)
 
@@ -1369,7 +1369,7 @@ async def run_sustained_load(
                 "| load ok=%d shed=%d other=%d | GPU free=%s MiB",
                 f"{occupancy:.1f}%" if occupancy is not None else "n/a",
                 "ABOVE" if occupancy is not None
-                and occupancy > threshold else "below",
+                and occupancy >= threshold else "below",
                 threshold,
                 pool,
                 sample["engine"].get("num_running_reqs"),
@@ -1459,7 +1459,7 @@ async def run_priority_batch(
 
     if wait_above:
         logger.info(
-            "Waiting up to %.0fs for KV token usage > %.0f%% before sending",
+            "Waiting up to %.0fs for KV token usage >= %.0f%% before sending",
             wait_above,
             threshold,
         )
@@ -1474,8 +1474,8 @@ async def run_priority_batch(
 
             usage = probe.get("kv_token_usage_percent")
 
-            if usage is not None and usage > threshold:
-                logger.info("KV token usage %.1f%% > threshold: sending", usage)
+            if usage is not None and usage >= threshold:
+                logger.info("KV token usage %.1f%% >= threshold: sending", usage)
                 break
 
             await asyncio.sleep(0.2)
@@ -1503,7 +1503,7 @@ async def run_priority_batch(
     )
 
 
-    if occupancy > threshold:
+    if occupancy >= threshold:
         expected = (
             "all admitted (Tier 1 bypasses shedding)"
             if priority == "high"
@@ -1518,7 +1518,7 @@ async def run_priority_batch(
         "KV usage %.2f%% is %s threshold %.2f%% -> expected: %s "
         "(usage is re-checked per request by the gateway)",
         occupancy,
-        "ABOVE" if occupancy > threshold else "below",
+        "AT/ABOVE" if occupancy >= threshold else "below",
         threshold,
         expected,
     )
@@ -1542,10 +1542,34 @@ async def run_priority_batch(
         for i in range(request_count)
     ]
 
-    results = await asyncio.gather(
-        *tasks,
-        return_exceptions=True,
-    )
+    # A 503 returns at once, but an admitted request queues in the engine
+    # (FCFS) behind the running load, so print a heartbeat while waiting.
+    pending = set(tasks)
+    batch_start = time.monotonic()
+
+    while pending:
+        _, pending = await asyncio.wait(pending, timeout=10)
+
+        if pending:
+            probe = await asyncio.to_thread(read_gateway_metrics, gateway)
+            logger.info(
+                "waiting %.0fs: %d/%d responses back, %d admitted and "
+                "queued in the engine behind the running load "
+                "(KV token usage %s%%)",
+                time.monotonic() - batch_start,
+                request_count - len(pending),
+                request_count,
+                len(pending),
+                probe.get("kv_token_usage_percent"),
+            )
+
+    results = [
+        t.exception() or t.result() if not t.cancelled() else None
+        for t in tasks
+    ]
+    results = [
+        r if r is not None else RuntimeError("cancelled") for r in results
+    ]
 
     if EVENTS:
         EVENTS.flush()
@@ -1594,18 +1618,18 @@ async def run_priority_batch(
 
     above = [
         r for r in observed
-        if (r.get("kv_usage_at_admission_percent") or 0) > threshold
+        if (r.get("kv_usage_at_admission_percent") or 0) >= threshold
     ]
 
     below = [
         r for r in observed
         if r.get("kv_usage_at_admission_percent") is not None
-        and r["kv_usage_at_admission_percent"] <= threshold
+        and r["kv_usage_at_admission_percent"] < threshold
     ]
 
     logger.info(
-        "EVIDENCE %s: %d/%d requests saw KV > %.0f%% at admission "
-        "(HTTP %s); %d/%d saw KV <= %.0f%% (HTTP %s)",
+        "EVIDENCE %s: %d/%d requests saw KV >= %.0f%% at admission "
+        "(HTTP %s); %d/%d saw KV < %.0f%% (HTTP %s)",
         priority_batch.upper(),
         len(above),
         len(observed),

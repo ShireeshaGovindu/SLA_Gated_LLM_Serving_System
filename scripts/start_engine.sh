@@ -16,7 +16,7 @@ exec python -m sglang.launch_server \
     --dtype half \
     --attention-backend triton \
     --sampling-backend pytorch \
-    --mem-fraction-static "${MEM_FRACTION:-0.80}" \
+    --mem-fraction-static "${MEM_FRACTION:-0.60}" \
     --context-length 4096 \
     --max-running-requests "${MAX_RUNNING_REQUESTS:-32}" \
     --enable-metrics \
